@@ -1,16 +1,25 @@
 from abc import ABC, abstractmethod
+import functools as ft
+from tqdm import tqdm, trange
+import math
+
 from jaxtyping import Float, Array, Integer
 import jax
 import jax.numpy as jnp
+from jax.experimental.mesh_utils import create_device_mesh
+from jax.sharding import Mesh, PartitionSpec, NamedSharding
+from jax.experimental.shard_map import shard_map
 
 from diffrax import (
     diffeqsolve,
     Dopri5,
     ODETerm,
     SaveAt,
+    SubSaveAt,
     PIDController,
     Event,
     TextProgressMeter,
+    NoProgressMeter,
     RecursiveCheckpointAdjoint,
 )
 
@@ -59,10 +68,24 @@ class TrajectorySolver:
 
         self.event = Event(cond_fn=cond_fn)
 
-    def run(self, x0: Array, v0: Array, coordinate_system: str = "cartesian"):
+    def single_run(
+        self,
+        x0: Array,
+        v0: Array,
+        coordinate_system: str = "cartesian",
+        progress: bool = True,
+        saveat: bool = True,
+    ):
         solver = Dopri5()
-        progress = TextProgressMeter()
-        saveat = SaveAt(ts=jnp.linspace(0.0, self.Dmax, 100))
+        if progress:
+            progress = TextProgressMeter()
+        else:
+            progress = NoProgressMeter()
+
+        if saveat:
+            saveat = SaveAt(ts=jnp.linspace(0.0, self.Dmax, 100))
+        else:
+            saveat = SaveAt(subs=SubSaveAt(t1=True))
 
         if coordinate_system == "spherical":
             r, theta, phi = x0
@@ -103,14 +126,48 @@ class TrajectorySolver:
             progress_meter=progress,
         )
 
-        return sol.ys
+        return jnp.array(sol.ys)
 
-    def run_batch(self, x0: Array, v0: Array, coordinate_system: str = "cartesian"):
-        def single_run(x, v):
-            return self.run(x, v, coordinate_system)
+    def batch_run(self, x0: Array, v0: Array, coordinate_system: str = "cartesian"):
+        n_device = jax.device_count()
+        n_run = x0.shape[0]
+        n_padding = n_device - n_run % n_device
+        n_epochs = math.ceil(n_run / n_device)
+        n_saveat = 1
 
-        batched_run = jax.vmap(single_run, in_axes=(0, 0))
-        return batched_run(x0, v0)
+        print(n_device, "devices detected. Running a batch size of ", n_device, ".")
+        mesh = Mesh(create_device_mesh((n_device,)), ["i"])
+        spec = PartitionSpec("i")
+
+        @jax.jit
+        @ft.partial(
+            shard_map, mesh=mesh, in_specs=spec, out_specs=spec, check_rep=False
+        )
+        @jax.vmap
+        def single_run_fn(x0, v0):
+            return self.single_run(
+                x0, v0, coordinate_system, progress=False, saveat=False
+            )
+
+        sharding = NamedSharding(mesh, spec)
+
+        results = jnp.zeros((n_run + n_padding, 6, n_saveat))
+        # add padding if necessary
+        if n_padding > 0:
+            x0 = jnp.vstack([x0, jnp.zeros((n_padding, x0.shape[1]))])
+            v0 = jnp.vstack([v0, jnp.zeros((n_padding, v0.shape[1]))])
+
+        pbar = trange(n_epochs, desc="Running solver")
+        for epoch in pbar:
+            start_idx = epoch * n_device
+            end_idx = epoch * n_device + n_device  # stop at end_idx - 1
+            x0_sharded = jax.device_put(x0[start_idx:end_idx], sharding)
+            v0_sharded = jax.device_put(v0[start_idx:end_idx], sharding)
+            results = results.at[start_idx:end_idx, :, :].set(
+                single_run_fn(x0_sharded, v0_sharded)
+            )
+
+        return results[0:n_run, :, :]
 
     def run_jacobian(self, x0: Array, v0: Array, coordinate_system: str = "cartesian"):
         solver = Dopri5()
@@ -161,6 +218,4 @@ class TrajectorySolver:
 
         jacobian_fn = jax.jacrev(final_position)
         jacobian = jacobian_fn(y0)
-        return jacobian
-
-        # return jnp.abs(jnp.linalg.det(jacobian))
+        return jnp.abs(jnp.linalg.det(jacobian))
