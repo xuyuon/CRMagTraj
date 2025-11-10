@@ -78,6 +78,7 @@ class TrajectorySolver:
         self,
         x0: Array,
         v0: Array,
+        energy: Float = None,
         coordinate_system: str = "cartesian",
         progress: bool = True,
         saveat: bool = True,
@@ -100,7 +101,7 @@ class TrajectorySolver:
 
             theta_nadir, phi_nadir = v0
             # phi_nadir=0 is northward, phi_nadir=pi/2 is eastward
-            mag = self.particle.get_beta() * C_SI
+            mag = self.particle.get_beta(energy) * C_SI
             vx, vy, vz = nadir_to_cartesian(theta, phi, mag, theta_nadir, phi_nadir)
             v0 = jnp.array([vx, vy, vz])
 
@@ -114,9 +115,9 @@ class TrajectorySolver:
             args=(
                 self.particle.get_charge()
                 * C_SI
-                / self.particle.get_energy()
-                / self.particle.get_beta(),
-                C_SI * self.particle.get_beta(),
+                / energy
+                / self.particle.get_beta(energy),
+                C_SI * self.particle.get_beta(energy),
             ),
             saveat=saveat,
             # stepsize_controller=stepsize_controller,
@@ -151,7 +152,9 @@ class TrajectorySolver:
         else:
             return jnp.array(sol.ys)
 
-    def batch_run(self, x0: Array, v0: Array, coordinate_system: str = "cartesian"):
+    def batch_run(
+        self, x0: Array, v0: Array, energy: Array, coordinate_system: str = "cartesian"
+    ):
         n_device = jax.device_count()
         n_run = x0.shape[0]
         n_padding = n_device - n_run % n_device
@@ -167,9 +170,9 @@ class TrajectorySolver:
             shard_map, mesh=mesh, in_specs=spec, out_specs=spec, check_rep=False
         )
         @jax.vmap
-        def single_run_fn(x0, v0):
+        def single_run_fn(x0_sr, v0_sr, energy_sr):
             return self.single_run(
-                x0, v0, coordinate_system, progress=False, saveat=False
+                x0_sr, v0_sr, energy_sr, coordinate_system, progress=False, saveat=False
             )
 
         sharding = NamedSharding(mesh, spec)
@@ -179,6 +182,7 @@ class TrajectorySolver:
         if n_padding > 0:
             x0 = jnp.vstack([x0, jnp.zeros((n_padding, x0.shape[1]))])
             v0 = jnp.vstack([v0, jnp.zeros((n_padding, v0.shape[1]))])
+            energy = jnp.hstack([energy, jnp.zeros((n_padding,))])
 
         pbar = trange(n_epochs, desc="Running solver")
         for epoch in pbar:
@@ -186,20 +190,18 @@ class TrajectorySolver:
             end_idx = epoch * n_device + n_device  # stop at end_idx - 1
             x0_sharded = jax.device_put(x0[start_idx:end_idx], sharding)
             v0_sharded = jax.device_put(v0[start_idx:end_idx], sharding)
+            energy_sharded = jax.device_put(energy[start_idx:end_idx], sharding)
             results = results.at[start_idx:end_idx, :, :].set(
-                single_run_fn(x0_sharded, v0_sharded)
+                single_run_fn(x0_sharded, v0_sharded, energy_sharded)
             )
 
         # Remove padding
         results = results[0:n_run, :, :]
-
-        # transform the result back to spherical coordinates
-        pos_r, pos_theta, pos_phi = jax.vmap(cartesian_to_spherical)(
-            results[:, 0, :], results[:, 1, :], results[:, 2, :]
-        )
         return results
 
-    def run_jacobian(self, x0: Array, v0: Array, coordinate_system: str = "cartesian"):
+    def run_jacobian(
+        self, x0: Array, v0: Array, energy: Float, coordinate_system: str = "cartesian"
+    ):
         solver = Dopri5()
         progress = TextProgressMeter()
         saveat = SaveAt(ts=jnp.linspace(0.0, self.Dmax, 100))
@@ -211,7 +213,7 @@ class TrajectorySolver:
 
             theta_nadir, phi_nadir = v0
             # phi_nadir=0 is northward, phi_nadir=pi/2 is eastward
-            mag = self.particle.get_beta() * C_SI
+            mag = self.particle.get_beta(energy) * C_SI
             v_north, v_east, v_down = spherical_to_cartesian(
                 mag, jnp.pi - theta_nadir, phi_nadir
             )
@@ -235,9 +237,9 @@ class TrajectorySolver:
                 args=(
                     self.particle.get_charge()
                     * C_SI
-                    / self.particle.get_energy()
-                    / self.particle.get_beta(),
-                    C_SI * self.particle.get_beta(),
+                    / energy
+                    / self.particle.get_beta(energy),
+                    C_SI * self.particle.get_beta(energy),
                 ),
                 # stepsize_controller=stepsize_controller,
                 adjoint=RecursiveCheckpointAdjoint(),

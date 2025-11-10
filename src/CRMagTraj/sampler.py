@@ -80,3 +80,18 @@ class UniformSphericalSurface:
         theta = self.theta_sampler.sample(subkey, n_samples)
         r = jnp.full((n_samples,), self.r)
         return jnp.stack([r, theta, phi], axis=1)
+
+
+class LogUniform:
+    """
+    Class to sample values from a log-uniform distribution.
+    """
+
+    def __init__(self, xmin: Float, xmax: Float):
+        self.xmin = xmin
+        self.xmax = xmax
+
+    def sample(self, key: PRNGKeyArray, n_samples: int) -> Array:
+        key, subkey = jax.random.split(key)
+        u = jax.random.uniform(subkey, shape=(n_samples,), minval=0.0, maxval=1.0)
+        return self.xmin * (self.xmax / self.xmin) ** u

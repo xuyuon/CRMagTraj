@@ -11,11 +11,14 @@ import multiprocessing
 from src.CRMagTraj.solver import TrajectorySolver
 from src.CRMagTraj.field import IGRFField, ConstField
 from src.CRMagTraj.particle import Antiproton
-from src.CRMagTraj.sampler import Sine, Lambertian, UniformSphericalSurface
+from src.CRMagTraj.sampler import Sine, Lambertian, UniformSphericalSurface, LogUniform
 
 jax.config.update("jax_enable_x64", True)
 
-antiproton = Antiproton(energy=3251319351.8354297)  # energy in eV
+E_min = 1e9  # eV
+E_max = 1e10  # eV
+energy_sampler = LogUniform(E_min, E_max)
+antiproton = Antiproton()  # energy in eV
 field = IGRFField("IGRF14.shc", 2011, 4, 28, 5)
 solver = TrajectorySolver(
     field_model=field,
@@ -32,11 +35,14 @@ key, subkey = jax.random.split(key)
 x0_list = UniformSphericalSurface(7371.2 * 1000).sample(key, n_samples)
 key, subkey = jax.random.split(subkey)
 v0_list = Lambertian().sample(subkey, n_samples)
+key, subkey = jax.random.split(subkey)
+energies = energy_sampler.sample(subkey, n_samples)
 
-batch_sols = solver.batch_run(x0_list, v0_list, coordinate_system="spherical")
+batch_sols = solver.batch_run(x0_list, v0_list, energies, coordinate_system="spherical")
 
 # save input
 np.save("input_x0.npy", np.array(x0_list))
 np.save("input_v0.npy", np.array(v0_list))
+np.save("input_energies.npy", np.array(energies))
 # save output
 np.save("output_batch_sols_ex.npy", np.array(batch_sols))

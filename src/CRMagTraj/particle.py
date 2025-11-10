@@ -4,6 +4,8 @@ from jaxtyping import Float, Array, Integer
 import jax
 import jax.numpy as jnp
 
+from .sampler import SamplerBase
+
 
 class ParticleBase(ABC):
     """Abstract base class for particles."""
@@ -16,11 +18,6 @@ class ParticleBase(ABC):
     @abstractmethod
     def get_charge(self) -> Float:
         """Get the charge of the particle."""
-        pass
-
-    @abstractmethod
-    def get_energy(self) -> Float:
-        """Get the energy of the particle."""
         pass
 
     @abstractmethod
@@ -37,10 +34,9 @@ class ParticleBase(ABC):
 class Antiproton(ParticleBase):
     """Class to represent an antiproton."""
 
-    def __init__(self, energy: Float):
+    def __init__(self):
         self.mass = 938.272089e6  # in eV/c^2
         self.charge = -1.0  # in elementary charge units
-        self.energy = energy  # in eV
 
     def get_mass(self) -> Float:
         return self.mass
@@ -48,12 +44,9 @@ class Antiproton(ParticleBase):
     def get_charge(self) -> Float:
         return self.charge
 
-    def get_energy(self) -> Float:
-        return self.energy
+    def get_gamma(self, energy) -> Float:  # energy in eV
+        return energy / self.mass
 
-    def get_gamma(self) -> Float:
-        return self.energy / self.mass
-
-    def get_beta(self) -> Float:
-        gamma = self.get_gamma()
+    def get_beta(self, energy) -> Float:
+        gamma = self.get_gamma(energy)
         return jnp.sqrt(1.0 - 1.0 / (gamma * gamma))
