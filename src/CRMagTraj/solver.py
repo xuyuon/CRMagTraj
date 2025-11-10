@@ -26,7 +26,13 @@ from diffrax import (
 from .field import FieldBase
 from .particle import ParticleBase
 from .constants import C_SI
-from .utils import spherical_to_cartesian, spherical_vec_to_cartesian_vec
+from .utils import (
+    spherical_to_cartesian,
+    spherical_vec_to_cartesian_vec,
+    cartesian_to_spherical,
+    nadir_to_cartesian,
+    cartesian_to_nadir,
+)
 
 
 class TrajectorySolver:
@@ -95,13 +101,7 @@ class TrajectorySolver:
             theta_nadir, phi_nadir = v0
             # phi_nadir=0 is northward, phi_nadir=pi/2 is eastward
             mag = self.particle.get_beta() * C_SI
-            v_north, v_east, v_down = spherical_to_cartesian(
-                mag, jnp.pi - theta_nadir, phi_nadir
-            )
-
-            vx, vy, vz = spherical_vec_to_cartesian_vec(
-                theta, phi, -v_down, -v_north, v_east
-            )
+            vx, vy, vz = nadir_to_cartesian(theta, phi, mag, theta_nadir, phi_nadir)
             v0 = jnp.array([vx, vy, vz])
 
         sol = diffeqsolve(
@@ -126,7 +126,30 @@ class TrajectorySolver:
             progress_meter=progress,
         )
 
-        return jnp.array(sol.ys)
+        # transform the result back to spherical coordinates
+        if coordinate_system == "spherical":
+            pos_r, pos_theta, pos_phi = jax.vmap(cartesian_to_spherical)(
+                jnp.array(sol.ys[0]), jnp.array(sol.ys[1]), jnp.array(sol.ys[2])
+            )
+            nadir_r, nadir_theta, nadir_phi = jax.vmap(cartesian_to_nadir)(
+                pos_theta,
+                pos_phi,
+                jnp.array(sol.ys[3]),
+                jnp.array(sol.ys[4]),
+                jnp.array(sol.ys[5]),
+            )
+            return jnp.array(
+                [
+                    pos_r,
+                    pos_theta,
+                    pos_phi,
+                    nadir_r,
+                    nadir_theta,
+                    nadir_phi,
+                ]
+            )
+        else:
+            return jnp.array(sol.ys)
 
     def batch_run(self, x0: Array, v0: Array, coordinate_system: str = "cartesian"):
         n_device = jax.device_count()
@@ -167,7 +190,14 @@ class TrajectorySolver:
                 single_run_fn(x0_sharded, v0_sharded)
             )
 
-        return results[0:n_run, :, :]
+        # Remove padding
+        results = results[0:n_run, :, :]
+
+        # transform the result back to spherical coordinates
+        pos_r, pos_theta, pos_phi = jax.vmap(cartesian_to_spherical)(
+            results[:, 0, :], results[:, 1, :], results[:, 2, :]
+        )
+        return results
 
     def run_jacobian(self, x0: Array, v0: Array, coordinate_system: str = "cartesian"):
         solver = Dopri5()
