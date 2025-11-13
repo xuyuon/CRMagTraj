@@ -41,6 +41,7 @@ energies = energy_sampler.sample(subkey, n_samples)
 batch_sols = solver.batch_run(x0_list, v0_list, energies, coordinate_system="spherical")
 
 # save input
+print("Saving input and output data...")
 np.save("input_x0.npy", np.array(x0_list))
 np.save("input_v0.npy", np.array(v0_list))
 np.save("input_energies.npy", np.array(energies))

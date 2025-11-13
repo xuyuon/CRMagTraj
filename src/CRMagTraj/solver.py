@@ -164,6 +164,7 @@ class TrajectorySolver:
         print(n_device, "devices detected. Running a batch size of ", n_device, ".")
         mesh = Mesh(create_device_mesh((n_device,)), ["i"])
         spec = PartitionSpec("i")
+        sharding = NamedSharding(mesh, spec)
 
         @jax.jit
         @ft.partial(
@@ -174,8 +175,6 @@ class TrajectorySolver:
             return self.single_run(
                 x0_sr, v0_sr, energy_sr, coordinate_system, progress=False, saveat=False
             )
-
-        sharding = NamedSharding(mesh, spec)
 
         results = jnp.zeros((n_run + n_padding, 6, n_saveat))
         # add padding if necessary
@@ -195,11 +194,23 @@ class TrajectorySolver:
                 single_run_fn(x0_sharded, v0_sharded, energy_sharded)
             )
 
+        # def body_fun(val, i):
+        #     start_idx = i * n_device
+        #     end_idx = i * n_device + n_device
+        #     x0_sharded = jax.device_put(x0[start_idx:end_idx], sharding)
+        #     v0_sharded = jax.device_put(v0[start_idx:end_idx], sharding)
+        #     energy_sharded = jax.device_put(energy[start_idx:end_idx], sharding)
+        #     res = single_run_fn(x0_sharded, v0_sharded, energy_sharded)
+        #     val = val.at[start_idx:end_idx, :, :].set(res)
+        #     return val, None
+
+        # results, _ = jax.lax.scan(body_fun, results, jnp.arange(n_epochs))
+
         # Remove padding
         results = results[0:n_run, :, :]
         return results
 
-    def run_jacobian(
+    def jacobian(
         self, x0: Array, v0: Array, energy: Float, coordinate_system: str = "cartesian"
     ):
         solver = Dopri5()
@@ -249,5 +260,4 @@ class TrajectorySolver:
             return jnp.array(sol.ys)
 
         jacobian_fn = jax.jacrev(final_position)
-        jacobian = jacobian_fn(y0)
-        return jnp.abs(jnp.linalg.det(jacobian))
+        return jacobian_fn(y0)
